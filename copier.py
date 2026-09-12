@@ -8,7 +8,7 @@ from tkinter import filedialog, messagebox, ttk
 class FastCopierApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("High-Speed RAM Copier")
+        self.root.title("NAS to USB Fast Copier")
         self.root.geometry("500x300")
         self.root.resizable(False, False)
 
@@ -22,13 +22,13 @@ class FastCopierApp:
         self.setup_ui()
 
     def setup_ui(self):
-        tk.Label(self.root, text="Source Folder:").pack(anchor="w", padx=20, pady=(15, 0))
+        tk.Label(self.root, text="Source Folder (NAS):").pack(anchor="w", padx=20, pady=(15, 0))
         src_frame = tk.Frame(self.root)
         src_frame.pack(fill="x", padx=20, pady=5)
         tk.Entry(src_frame, textvariable=self.source_dir, width=45).pack(side="left")
         tk.Button(src_frame, text="Browse", command=self.select_source).pack(side="right")
 
-        tk.Label(self.root, text="Destination Folder:").pack(anchor="w", padx=20, pady=(10, 0))
+        tk.Label(self.root, text="Destination Folder (Pen Drive):").pack(anchor="w", padx=20, pady=(10, 0))
         dest_frame = tk.Frame(self.root)
         dest_frame.pack(fill="x", padx=20, pady=5)
         tk.Entry(dest_frame, textvariable=self.dest_dir, width=45).pack(side="left")
@@ -65,7 +65,7 @@ class FastCopierApp:
             return
 
         self.copy_btn.config(state="disabled", bg="gray")
-        self.status_label.config(text="Starting fast scan...", fg="blue")
+        self.status_label.config(text="Scanning network drive...", fg="blue")
         self.progress_var.set(0)
 
         threading.Thread(target=self.execute_copy, args=(src, dest), daemon=True).start()
@@ -81,26 +81,35 @@ class FastCopierApp:
 
     def execute_copy(self, src, dest):
         try:
-            # 1. High-speed scan phase
+            # 1. High-speed Network Scan Phase (using os.scandir)
             files_to_copy = []
             total_size = 0
             scanned_count = 0
-            scan_time = time.time()
-
-            for root_dir, _, files in os.walk(src):
-                for file in files:
-                    file_path = os.path.join(root_dir, file)
-                    files_to_copy.append(file_path)
-                    try:
-                        total_size += os.path.getsize(file_path)
-                    except OSError:
-                        pass
-                    
-                    scanned_count += 1
-                    now = time.time()
-                    if now - scan_time > 0.1:
-                        scan_time = now
-                        self.root.after(0, self.update_scan_ui, scanned_count)
+            self.last_update_time = time.time()
+            
+            # Use a manual stack to traverse network folders without standard recursion overhead
+            dirs_to_scan = [src]
+            
+            while dirs_to_scan:
+                current_dir = dirs_to_scan.pop()
+                try:
+                    with os.scandir(current_dir) as it:
+                        for entry in it:
+                            if entry.is_file(follow_symlinks=False):
+                                stat = entry.stat(follow_symlinks=False)
+                                total_size += stat.st_size
+                                files_to_copy.append(entry.path)
+                                scanned_count += 1
+                                
+                                now = time.time()
+                                if now - self.last_update_time > 0.1:
+                                    self.last_update_time = now
+                                    self.root.after(0, self.update_scan_ui, scanned_count)
+                            elif entry.is_dir(follow_symlinks=False):
+                                dirs_to_scan.append(entry.path)
+                except OSError:
+                    # Skip locked network folders safely
+                    pass
 
             if total_size == 0:
                 self.root.after(0, self.finish_copy, True, "No files found to copy.")
@@ -113,10 +122,11 @@ class FastCopierApp:
             folder_name = os.path.basename(os.path.normpath(src))
             target_dest_root = os.path.join(dest, folder_name)
 
-            # 2. Allocate a massive 256 MB RAM buffer block
-            # This utilizes high RAM to drastically reduce I/O bottlenecks
-            ram_buffer_size = 256 * 1024 * 1024 
-            pre_allocated_ram = bytearray(ram_buffer_size)
+            # 2. USB-Optimized RAM Buffer (16 MB)
+            # 16 MB is large enough to keep the CPU idle, but small enough to prevent 
+            # the Pen Drive flash controller from stalling and freezing Windows.
+            usb_buffer_size = 16 * 1024 * 1024 
+            pre_allocated_ram = bytearray(usb_buffer_size)
             ram_view = memoryview(pre_allocated_ram)
 
             for src_file in files_to_copy:
@@ -127,12 +137,10 @@ class FastCopierApp:
                 try:
                     with open(src_file, 'rb') as fsrc, open(dst_file, 'wb') as fdst:
                         while True:
-                            # Read directly into the pre-allocated RAM block
                             bytes_read = fsrc.readinto(pre_allocated_ram)
                             if not bytes_read:
                                 break
                             
-                            # Write exactly what was read from that RAM block
                             fdst.write(ram_view[:bytes_read])
                             self.copied_bytes += bytes_read
 

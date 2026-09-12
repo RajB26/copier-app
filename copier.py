@@ -8,7 +8,7 @@ from tkinter import filedialog, messagebox, ttk
 class FastCopierApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Fast File Copier")
+        self.root.title("High-Speed RAM Copier")
         self.root.geometry("500x300")
         self.root.resizable(False, False)
 
@@ -65,7 +65,7 @@ class FastCopierApp:
             return
 
         self.copy_btn.config(state="disabled", bg="gray")
-        self.status_label.config(text="Starting scan...", fg="blue")
+        self.status_label.config(text="Starting fast scan...", fg="blue")
         self.progress_var.set(0)
 
         threading.Thread(target=self.execute_copy, args=(src, dest), daemon=True).start()
@@ -81,7 +81,7 @@ class FastCopierApp:
 
     def execute_copy(self, src, dest):
         try:
-            # 1. Scan files with live UI updates
+            # 1. High-speed scan phase
             files_to_copy = []
             total_size = 0
             scanned_count = 0
@@ -91,8 +91,6 @@ class FastCopierApp:
                 for file in files:
                     file_path = os.path.join(root_dir, file)
                     files_to_copy.append(file_path)
-                    
-                    # Safely try to get size, skipping locked files
                     try:
                         total_size += os.path.getsize(file_path)
                     except OSError:
@@ -100,7 +98,7 @@ class FastCopierApp:
                     
                     scanned_count += 1
                     now = time.time()
-                    if now - scan_time > 0.1:  # Update UI every 0.1 seconds
+                    if now - scan_time > 0.1:
                         scan_time = now
                         self.root.after(0, self.update_scan_ui, scanned_count)
 
@@ -112,24 +110,31 @@ class FastCopierApp:
             self.copied_bytes = 0
             self.last_update_time = time.time()
 
-            # 2. Copy files in chunks
             folder_name = os.path.basename(os.path.normpath(src))
             target_dest_root = os.path.join(dest, folder_name)
+
+            # 2. Allocate a massive 256 MB RAM buffer block
+            # This utilizes high RAM to drastically reduce I/O bottlenecks
+            ram_buffer_size = 256 * 1024 * 1024 
+            pre_allocated_ram = bytearray(ram_buffer_size)
+            ram_view = memoryview(pre_allocated_ram)
 
             for src_file in files_to_copy:
                 rel_path = os.path.relpath(src_file, src)
                 dst_file = os.path.join(target_dest_root, rel_path)
-
                 os.makedirs(os.path.dirname(dst_file), exist_ok=True)
                 
                 try:
                     with open(src_file, 'rb') as fsrc, open(dst_file, 'wb') as fdst:
                         while True:
-                            chunk = fsrc.read(4 * 1024 * 1024)
-                            if not chunk:
+                            # Read directly into the pre-allocated RAM block
+                            bytes_read = fsrc.readinto(pre_allocated_ram)
+                            if not bytes_read:
                                 break
-                            fdst.write(chunk)
-                            self.copied_bytes += len(chunk)
+                            
+                            # Write exactly what was read from that RAM block
+                            fdst.write(ram_view[:bytes_read])
+                            self.copied_bytes += bytes_read
 
                             now = time.time()
                             if now - self.last_update_time > 0.1:
@@ -138,7 +143,6 @@ class FastCopierApp:
                     
                     shutil.copystat(src_file, dst_file)
                 except OSError:
-                    # Skip files that are currently locked by other programs
                     pass
 
             self.root.after(0, self.update_copy_ui)

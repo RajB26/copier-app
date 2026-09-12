@@ -22,21 +22,18 @@ class FastCopierApp:
         self.setup_ui()
 
     def setup_ui(self):
-        # Source Selection
         tk.Label(self.root, text="Source Folder:").pack(anchor="w", padx=20, pady=(15, 0))
         src_frame = tk.Frame(self.root)
         src_frame.pack(fill="x", padx=20, pady=5)
         tk.Entry(src_frame, textvariable=self.source_dir, width=45).pack(side="left")
         tk.Button(src_frame, text="Browse", command=self.select_source).pack(side="right")
 
-        # Destination Selection
         tk.Label(self.root, text="Destination Folder:").pack(anchor="w", padx=20, pady=(10, 0))
         dest_frame = tk.Frame(self.root)
         dest_frame.pack(fill="x", padx=20, pady=5)
         tk.Entry(dest_frame, textvariable=self.dest_dir, width=45).pack(side="left")
         tk.Button(dest_frame, text="Browse", command=self.select_dest).pack(side="right")
 
-        # Progress Bar and Status
         self.progress_var = tk.DoubleVar()
         self.progress_bar = ttk.Progressbar(self.root, variable=self.progress_var, maximum=100, length=460)
         self.progress_bar.pack(pady=(20, 5))
@@ -44,7 +41,6 @@ class FastCopierApp:
         self.status_label = tk.Label(self.root, text="Waiting for input...", fg="gray")
         self.status_label.pack()
 
-        # Copy Button
         self.copy_btn = tk.Button(self.root, text="Start Copying", bg="#4CAF50", fg="white", 
                                   font=("Arial", 10, "bold"), command=self.start_copy_thread)
         self.copy_btn.pack(pady=15)
@@ -69,12 +65,15 @@ class FastCopierApp:
             return
 
         self.copy_btn.config(state="disabled", bg="gray")
-        self.status_label.config(text="Scanning files... Please wait.", fg="blue")
+        self.status_label.config(text="Starting scan...", fg="blue")
         self.progress_var.set(0)
 
         threading.Thread(target=self.execute_copy, args=(src, dest), daemon=True).start()
 
-    def update_ui(self):
+    def update_scan_ui(self, count):
+        self.status_label.config(text=f"Scanning... Found {count} files")
+
+    def update_copy_ui(self):
         if self.total_bytes > 0:
             percent = (self.copied_bytes / self.total_bytes) * 100
             self.progress_var.set(percent)
@@ -82,14 +81,28 @@ class FastCopierApp:
 
     def execute_copy(self, src, dest):
         try:
-            # 1. Scan all files to determine exact total size
+            # 1. Scan files with live UI updates
             files_to_copy = []
             total_size = 0
+            scanned_count = 0
+            scan_time = time.time()
+
             for root_dir, _, files in os.walk(src):
                 for file in files:
                     file_path = os.path.join(root_dir, file)
                     files_to_copy.append(file_path)
-                    total_size += os.path.getsize(file_path)
+                    
+                    # Safely try to get size, skipping locked files
+                    try:
+                        total_size += os.path.getsize(file_path)
+                    except OSError:
+                        pass
+                    
+                    scanned_count += 1
+                    now = time.time()
+                    if now - scan_time > 0.1:  # Update UI every 0.1 seconds
+                        scan_time = now
+                        self.root.after(0, self.update_scan_ui, scanned_count)
 
             if total_size == 0:
                 self.root.after(0, self.finish_copy, True, "No files found to copy.")
@@ -109,23 +122,26 @@ class FastCopierApp:
 
                 os.makedirs(os.path.dirname(dst_file), exist_ok=True)
                 
-                # 4MB chunks for optimal speed and accurate progress tracking
-                with open(src_file, 'rb') as fsrc, open(dst_file, 'wb') as fdst:
-                    while True:
-                        chunk = fsrc.read(4 * 1024 * 1024)
-                        if not chunk:
-                            break
-                        fdst.write(chunk)
-                        self.copied_bytes += len(chunk)
+                try:
+                    with open(src_file, 'rb') as fsrc, open(dst_file, 'wb') as fdst:
+                        while True:
+                            chunk = fsrc.read(4 * 1024 * 1024)
+                            if not chunk:
+                                break
+                            fdst.write(chunk)
+                            self.copied_bytes += len(chunk)
 
-                        now = time.time()
-                        if now - self.last_update_time > 0.1:
-                            self.last_update_time = now
-                            self.root.after(0, self.update_ui)
+                            now = time.time()
+                            if now - self.last_update_time > 0.1:
+                                self.last_update_time = now
+                                self.root.after(0, self.update_copy_ui)
+                    
+                    shutil.copystat(src_file, dst_file)
+                except OSError:
+                    # Skip files that are currently locked by other programs
+                    pass
 
-                shutil.copystat(src_file, dst_file)
-
-            self.root.after(0, self.update_ui)
+            self.root.after(0, self.update_copy_ui)
             self.root.after(0, self.finish_copy, True, "Transfer completed successfully!")
 
         except Exception as e:
